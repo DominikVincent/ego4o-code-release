@@ -1,0 +1,37 @@
+#!/bin/bash
+
+NCCL_SOCKET_IFNAME=lo deepspeed llava/ego4o/train/train_mem_ego4o.py \
+    --deepspeed ./scripts/zero2.json \
+    --model_name_or_path liuhaotian/llava-v1.6-vicuna-7b \
+    --version plain \
+    --data_path /scratch/inf0/user/jianwang/nymeria/ego4o_input_json.jsonl \
+    --image_folder /scratch/inf0/user/jianwang/nymeria/dummy_image \
+    --motion_folder /scratch/inf0/user/jianwang/nymeria/ego4o_input_motion \
+    --vision_tower openai/clip-vit-large-patch14-336 \
+    --mm_projector_type mlp2x_gelu \
+    --tune_mm_mlp_adapter False \
+    --tune_motion_mlp_adapter True \
+    --mm_vision_select_layer -2 \
+    --mm_use_im_start_end False \
+    --mm_use_im_patch_token False \
+    --bf16 True \
+    --tf32 True \
+    --output_dir ./checkpoints/ego4o_motion2text_pretrain_debug \
+    --num_train_epochs 1 \
+    --per_device_train_batch_size 16 \
+    --per_device_eval_batch_size 4 \
+    --gradient_accumulation_steps 1 \
+    --evaluation_strategy "no" \
+    --save_strategy "steps" \
+    --save_steps 24000 \
+    --save_total_limit 1 \
+    --learning_rate 1e-3 \
+    --weight_decay 0. \
+    --warmup_ratio 0.03 \
+    --lr_scheduler_type "cosine" \
+    --logging_steps 1 \
+    --model_max_length 2048 \
+    --gradient_checkpointing True \
+    --dataloader_num_workers 4 \
+    --lazy_preprocess True \
+    --report_to wandb
