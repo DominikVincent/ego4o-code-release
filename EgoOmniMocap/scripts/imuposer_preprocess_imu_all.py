@@ -18,7 +18,7 @@ from imuposer.config import Config, amass_datasets
 from imuposer.smpl.parametricModel import ParametricModel
 from imuposer import math
 
-config = Config(project_root_dir="..")
+config = Config(project_root_dir="/home/dominik/Documents/ego4o_data/IMUPoser", mkdir=False)
 
 def process_amass(out_dir_name='AMASS_w_name'):
     def _syn_acc(v):

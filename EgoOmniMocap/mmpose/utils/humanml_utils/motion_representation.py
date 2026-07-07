@@ -78,7 +78,7 @@ kinematic_chain = t2m_kinematic_chain
 if os.name == 'nt':
     data_dir = 'Z:/EgoMocap/work/HumanML3D/joints/'
 else:
-    data_dir = '/CT/EgoMocap/work/HumanML3D/joints/'
+    data_dir = '/home/dominik/Documents/repos/HumanML3D/joints/'
 example_id = "000021"
 
 example_data = np.load(os.path.join(data_dir, example_id + '.npy'))

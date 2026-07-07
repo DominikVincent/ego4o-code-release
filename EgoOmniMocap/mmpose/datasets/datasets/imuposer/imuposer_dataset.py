@@ -23,12 +23,16 @@ class IMUPoserDataset(Dataset):
                  combo_name='global',
                  split="train",
                  wo_total_capture=False,
+                 hold_out_val=False,
                  pipeline=None,
                  ):
         super().__init__()
 
         # load the data
         self.wo_total_capture = wo_total_capture
+        # when True, the first natsorted non-dip file (used by the 'val' split)
+        # is excluded from 'train' so the AMASS-only val set has no leakage
+        self.hold_out_val = hold_out_val
         self.signal_num = signal_num
         self.combo_name = combo_name
         self.tlcontrol_joint_sequence = tlcontrol_joint_sequence
@@ -54,6 +58,10 @@ class IMUPoserDataset(Dataset):
     def load_data(self):
         if self.train == "train":
             data_files = [x.name for x in self.config.processed_imu_poser_25fps.iterdir() if "dip" not in x.name]
+            if self.hold_out_val:
+                val_file = natsorted(data_files)[0:1]
+                data_files = [x for x in data_files if x not in val_file]
+                print(f'hold_out_val: excluding {val_file} from train')
             if self.wo_total_capture:
                 print(f'filter total capture data, before filter: {len(data_files)}')
                 data_files = [x for x in data_files if "TotalCapture" not in x]

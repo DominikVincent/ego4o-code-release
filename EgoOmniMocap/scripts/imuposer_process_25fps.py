@@ -7,7 +7,7 @@ from imuposer import math
 
 # -
 
-config = Config(project_root_dir="../../")
+config = Config(project_root_dir="/home/dominik/Documents/ego4o_data/IMUPoser", mkdir=False)
 
 # +
 target_fps = 25
@@ -57,8 +57,9 @@ path_to_save.mkdir(exist_ok=True, parents=True)
 
 # process AMASS first
 
-motion_dir = r'Z:\EgoMocap\work\EgoOmniMocap\scripts\amass_data_dict'
-out_motion_dir = r'Z:\EgoMocap\work\EgoOmniMocap\scripts\amass_data_dict_25fps'
+motion_dir = r'/home/dominik/Documents/ego4o_data/amass_data_dict'
+# write straight into the dir IMUPoserDataset reads from
+out_motion_dir = str(config.processed_imu_poser_25fps)
 os.makedirs(out_motion_dir, exist_ok=True)
 motion_names = [f for f in os.listdir(motion_dir) if f.endswith('.pt')]
 
