@@ -81,13 +81,22 @@ else:
     data_dir = '/CT/EgoMocap/work/HumanML3D/joints/'
 example_id = "000021"
 
-example_data = np.load(os.path.join(data_dir, example_id + '.npy'))
-example_data = example_data.reshape(len(example_data), -1, 3)
-example_data = torch.from_numpy(example_data)
+# Local adaptation: the HumanML3D example file (authors' cluster path) is only
+# needed for tgt_offsets, which the precomputed-feature path never uses
+# (process_file is only called with uniform=False). Guard the load so this
+# module (and the transforms registry importing it) works without the file.
+try:
+    example_data = np.load(os.path.join(data_dir, example_id + '.npy'))
+    example_data = example_data.reshape(len(example_data), -1, 3)
+    example_data = torch.from_numpy(example_data)
 
-tgt_skel = Skeleton(n_raw_offsets, kinematic_chain, 'cpu')
-# (joints_num, 3)
-tgt_offsets = tgt_skel.get_offsets_joints(example_data[0])
+    tgt_skel = Skeleton(n_raw_offsets, kinematic_chain, 'cpu')
+    # (joints_num, 3)
+    tgt_offsets = tgt_skel.get_offsets_joints(example_data[0])
+except FileNotFoundError:
+    print(f'motion_representation: HumanML3D example {data_dir}{example_id}.npy not found; '
+          f'tgt_offsets=None (only needed for uniform_skeleton / process_file(uniform=True)).')
+    tgt_offsets = None
 
 def uniform_skeleton(positions, target_offset):
     src_skel = Skeleton(n_raw_offsets, kinematic_chain, 'cpu')
