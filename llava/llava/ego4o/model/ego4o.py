@@ -104,6 +104,11 @@ class Ego4oMetaModel:
         return output_motion_features, code_index_input
 
     def encode_image_imu(self, imu_acc, imu_ori, img):
+        if not hasattr(self, 'imu_tokenizer'):
+            raise RuntimeError(
+                'encode_image_imu called but the IMU tokenizer was not built '
+                '(config.pretrained_imu_tokenizer_path is None — GT-motion variant). '
+                'Feed motion_hml instead of IMU tensors.')
         self.imu_tokenizer.eval()
         self.imu_tokenizer.requires_grad_(False)
         self.vq_net.eval()
@@ -189,45 +194,53 @@ class Ego4oMetaModel:
                 nn.init.zeros_(module.bias)
         self.vq_net_decoder_preprocess.requires_grad_(True)
 
-        # load the imu tokenizer
-        self.imu_tokenizer = TransformerAutoencoder_withCodes_hml_G2_noTraj(
-            input_dim=9, dropout=0.1, num_emb=4096,
-            max_text_len=None,
-            text_drop_rate=0,
-            image_drop_rate=0,
-            transfomers_clip=False
-        )
-        print(f"Loading pretrained imu tokenizer from {config.pretrained_imu_tokenizer_path}", flush=True)
-        imu_tokenizer_state_dict = torch.load(config.pretrained_imu_tokenizer_path)
-        if 'state_dict' in imu_tokenizer_state_dict:
-            imu_tokenizer_state_dict = imu_tokenizer_state_dict['state_dict']
+        # load the imu tokenizer — only for the original IMU-input variant.
+        # GT-motion variant (pretrained_imu_tokenizer_path=None): skip entirely,
+        # motion enters via encode_motion and the IMU checkpoint is not needed.
+        if getattr(config, 'pretrained_imu_tokenizer_path', None):
+            self.imu_tokenizer = TransformerAutoencoder_withCodes_hml_G2_noTraj(
+                input_dim=9, dropout=0.1, num_emb=4096,
+                max_text_len=None,
+                text_drop_rate=0,
+                image_drop_rate=0,
+                transfomers_clip=False
+            )
+            print(f"Loading pretrained imu tokenizer from {config.pretrained_imu_tokenizer_path}", flush=True)
+            imu_tokenizer_state_dict = torch.load(config.pretrained_imu_tokenizer_path)
+            if 'state_dict' in imu_tokenizer_state_dict:
+                imu_tokenizer_state_dict = imu_tokenizer_state_dict['state_dict']
 
-        # filter out model start from "transformer_traj_model" and remove the prefix
+            # filter out model start from "transformer_traj_model" and remove the prefix
 
-        imu_tokenizer_state_dict = {k.replace("transformer_traj_model.", ""): v for k, v in imu_tokenizer_state_dict.items() if k.startswith("transformer_traj_model.")}
-        self.imu_tokenizer.load_state_dict(imu_tokenizer_state_dict, strict=True)
+            imu_tokenizer_state_dict = {k.replace("transformer_traj_model.", ""): v for k, v in imu_tokenizer_state_dict.items() if k.startswith("transformer_traj_model.")}
+            self.imu_tokenizer.load_state_dict(imu_tokenizer_state_dict, strict=True)
 
-        # freeze the imu tokenizer
-        for param in self.imu_tokenizer.parameters():
-            param.requires_grad = False
+            # freeze the imu tokenizer
+            for param in self.imu_tokenizer.parameters():
+                param.requires_grad = False
 
-        self.imu_tokenizer.eval()
+            self.imu_tokenizer.eval()
 
-        mlp_depth_for_imu_tokenizer = 2
-        modules = [nn.Linear(args.emb_dim * 6, self.config.motion_out_dim)]
-        for _ in range(1, mlp_depth):
-            modules.append(nn.GELU())
-            modules.append(nn.Linear(self.config.motion_out_dim, self.config.motion_out_dim))
-        self.imu_tokenizer_postprocess = nn.Sequential(*modules)
-        self.imu_tokenizer_postprocess.requires_grad_(True)
+            mlp_depth_for_imu_tokenizer = 2
+            modules = [nn.Linear(args.emb_dim * 6, self.config.motion_out_dim)]
+            for _ in range(1, mlp_depth):
+                modules.append(nn.GELU())
+                modules.append(nn.Linear(self.config.motion_out_dim, self.config.motion_out_dim))
+            self.imu_tokenizer_postprocess = nn.Sequential(*modules)
+            self.imu_tokenizer_postprocess.requires_grad_(True)
 
 
 class Ego4oConfig(LlamaConfig):
     model_type = "ego4o"
     motion_out_dim = 4096
     motion_recon_weight = 5.0
-    pretrained_vqvae_path = '/CT/EgoMocap/work/EgoOmniMocap/work_dirs/train_nymeria_vqvae_4096_64/best_C-MPJPE_epoch_30.pth'
-    pretrained_imu_tokenizer_path = '/CT/EgoMocap/work/EgoOmniMocap/work_dirs/train_nymeria_random_image_text/best_C-MPJPE_epoch_23.pth'
+    # GT-motion reproduction (local): stage-1 script maintains the best_vqvae.pth
+    # symlink; override via --pretrained_vqvae_path (absorbed into the config by
+    # from_pretrained since it is a declared config attribute).
+    pretrained_vqvae_path = '/local/home/dhollidt/repos/ego4o-code-release/EgoOmniMocap/work_dirs/train_nymeria_vqvae_4096_64_hml/best_vqvae.pth'
+    # None = GT-motion variant: the IMU multi-modal encoder is never built/loaded
+    # (original release: '/CT/EgoMocap/work/EgoOmniMocap/work_dirs/train_nymeria_random_image_text/best_C-MPJPE_epoch_23.pth')
+    pretrained_imu_tokenizer_path = None
     input_modality = 'motion'  # motion or imu sensor
 
 class Ego4oModel(Ego4oMetaModel, LlavaLlamaModel):

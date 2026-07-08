@@ -247,6 +247,23 @@ class LLaVATrainer(Trainer):
                 torch.save(weight_to_save, os.path.join(output_dir, f'mm_projector.bin'))
         else:
             super(LLaVATrainer, self)._save_checkpoint(model, trial, metrics)
+            if getattr(self.args, 'lora_enable', False):
+                # Also store the non-LoRA trainables (mm_projector / motion
+                # adapter) with every checkpoint, so any intermediate checkpoint
+                # (e.g. the best one from early stopping) is directly usable by
+                # the eval script without extracting the deepspeed engine state.
+                from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
+                checkpoint_folder = f"{PREFIX_CHECKPOINT_DIR}-{self.state.global_step}"
+                run_dir = self._get_output_dir(trial=trial)
+                output_dir = os.path.join(run_dir, checkpoint_folder)
+                non_lora_state_dict = {
+                    name: maybe_zero_3(param, ignore_status=True, name=name).cpu()
+                    for name, param in self.model.named_parameters()
+                    if param.requires_grad and 'lora_' not in name
+                }
+                if self.args.local_rank == 0 or self.args.local_rank == -1:
+                    torch.save(non_lora_state_dict,
+                               os.path.join(output_dir, 'non_lora_trainables.bin'))
 
     def _save(self, output_dir: Optional[str] = None, state_dict=None):
         if getattr(self.args, 'tune_mm_mlp_adapter', False):

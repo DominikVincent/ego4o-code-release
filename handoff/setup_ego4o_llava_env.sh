@@ -21,6 +21,11 @@ pip install torch==2.1.2 torchvision==0.16.2 --index-url https://download.pytorc
 # llava package + pinned deps (transformers 4.37.2, tokenizers 0.15.1, ...)
 pip install -e "$REPO/llava"
 pip install -e "$REPO/llava[train]"   # deepspeed 0.12.6, ninja, wandb
+# llava's pyproject leaves peft unpinned; new peft needs accelerate>0.21 and breaks
+# `from transformers import Trainer` (clear_device_cache import). Pin the LLaVA-era version.
+pip install peft==0.4.0
+# eval metric deps
+pip install evaluate bert_score rouge_score nltk
 
 # mmcv prebuilt wheel (cu121/torch2.1) + mm ecosystem for the ego4o transforms
 pip install mmcv==2.1.0 -f https://download.openmmlab.com/mmcv/dist/cu121/torch2.1/index.html

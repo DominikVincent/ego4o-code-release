@@ -19,6 +19,8 @@ dist
 
 # Data
 !**/alpaca-data-conversation.json
+!scripts/zero2.json
+!scripts/zero2_offload.json
 
 # Editor
 .idea

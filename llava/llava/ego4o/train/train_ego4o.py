@@ -36,6 +36,7 @@ from torch.utils.data import Dataset
 
 from llava.ego4o.constants import MOTION_TOKEN_INDEX, DEFAULT_MOTION_TOKEN
 from llava.ego4o.dataset.nymeria_dataset import NymeriaDataset
+from llava.ego4o.dataset.nymeria_hml_dataset import NymeriaHMLDataset
 from llava.ego4o.dataset.transforms.motion_transforms import ConvertNymeriaToHML, InitAlignIMUMotion, \
     HMLMotionRepresentation, PadMotion, ChangeHMLShape, ZUp2YUp, NormalizeHMLMotion
 from llava.ego4o.model.ego4o import Ego4oForCausalLM
@@ -78,6 +79,11 @@ class ModelArguments:
     load_motion_encoder: bool = field(default=True)
     is_pretrain: bool = field(default=False)
     motion_token_loss_weight: float = field(default=1.0)
+    # GT-motion variant: override the Ego4oConfig checkpoint paths from the CLI.
+    # None = keep the config value (class default or the value stored in the
+    # base checkpoint's config.json). Absorbed into the config by from_pretrained.
+    pretrained_vqvae_path: Optional[str] = field(default=None)
+    pretrained_imu_tokenizer_path: Optional[str] = field(default=None)
 
 
 @dataclass
@@ -89,6 +95,8 @@ class DataArguments:
     image_folder: Optional[str] = field(default=None)
     image_aspect_ratio: str = 'square'
     motion_folder: Optional[str] = field(default=None)
+    dataset_dir: str = field(default='/local/home/dhollidt/data/ego4o_nymeria',
+                             metadata={"help": "Root of the precomputed HML Nymeria dataset."})
 
 
 @dataclass
@@ -127,6 +135,11 @@ class TrainingArguments(transformers.TrainingArguments):
     lora_bias: str = "none"
     mm_projector_lr: Optional[float] = None
     group_by_modality_length: bool = field(default=False)
+    early_stopping_patience: int = field(
+        default=0,
+        metadata={"help": "If >0, add EarlyStoppingCallback with this patience "
+                          "(requires evaluation_strategy, load_best_model_at_end, "
+                          "metric_for_best_model)."})
 
 
 def maybe_zero_3(param, ignore_status=False, name=None):
@@ -308,60 +321,35 @@ class DataCollatorForSupervisedDataset(object):
             else:
                 batch['motion_hml'] = motion_hml
 
-        if 'img_for_imu' in instances[0]:
-            img_for_imu = []
-            for instance in instances:
-                img_for_imu.append(instance['img_for_imu'])
-            if all(x is not None and x.shape == img_for_imu[0].shape for x in img_for_imu):
-                batch['img_for_imu'] = torch.stack(img_for_imu)
-            else:
-                batch['img_for_imu'] = img_for_imu
-
-            imu_acc = []
-            for instance in instances:
-                imu_acc.append(instance['init_aligned_imu_acc'])
-            batch['init_aligned_imu_acc'] = torch.stack(imu_acc)
-
-            imu_ori = []
-            for instance in instances:
-                imu_ori.append(instance['init_aligned_imu_ori'])
-            batch['init_aligned_imu_ori'] = torch.stack(imu_ori)
+        # GT-motion variant: no IMU keys are collated (their absence routes the
+        # model into encode_motion, see prepare_inputs_labels_for_motion).
         return batch
 
 
 def make_supervised_data_module(tokenizer: transformers.PreTrainedTokenizer,
                                 data_args) -> Dict:
-    """Make dataset and collator for supervised fine-tuning."""
-    train_dataset = NymeriaDataset(tokenizer=tokenizer,
-                                   data_args=data_args,
-                                   dataset_dir='/scratch/inf0/user/jianwang/nymeria',
-                                   dataset_json_path=data_args.data_path,
-                                   seq_len=150,
-                                   min_seq_len=150,
-                                   signal_num=6,
-                                   tlcontrol_joint_sequence=True,
-                                   random_mask=True,
-                                   split="train",
-                                   pipeline=None,
-                                   with_text=True, )
+    """Make dataset and collator for supervised fine-tuning.
 
-    test_dataset = NymeriaDataset(tokenizer=tokenizer,
-                                   data_args=data_args,
-                                   dataset_dir='/scratch/inf0/user/jianwang/nymeria',
-                                   dataset_json_path=data_args.data_path,
-                                   seq_len=150,
-                                   min_seq_len=150,
-                                   signal_num=6,
-                                   tlcontrol_joint_sequence=True,
-                                   random_mask=True,
-                                   split="test",
-                                   pipeline=None,
-                                   with_text=True,
-                                  max_data_num=1000,
-                                  )
+    GT-motion variant: precomputed-HML dataset (NymeriaHMLDataset), no IMU.
+    `--data_path` selects the train jsonl; eval always uses the val split
+    (capped) from the same dataset_dir.
+    """
+    train_dataset = NymeriaHMLDataset(tokenizer=tokenizer,
+                                      data_args=data_args,
+                                      dataset_dir=data_args.dataset_dir,
+                                      dataset_json_path=data_args.data_path,
+                                      seq_len=148,
+                                      split="train")
+
+    eval_dataset = NymeriaHMLDataset(tokenizer=tokenizer,
+                                     data_args=data_args,
+                                     dataset_dir=data_args.dataset_dir,
+                                     seq_len=148,
+                                     split="val",
+                                     data_range=(0, 2048))
     data_collator = DataCollatorForSupervisedDataset(tokenizer=tokenizer)
     return dict(train_dataset=train_dataset,
-                eval_dataset=test_dataset,
+                eval_dataset=eval_dataset,
                 data_collator=data_collator)
 
 
@@ -404,12 +392,20 @@ def train(attn_implementation=None):
                 **bnb_model_from_pretrained_args
             )
         else:
+            # config-attribute kwargs (pretrained_*_path) are absorbed into
+            # Ego4oConfig by from_pretrained; only pass them when overriding.
+            ego4o_config_overrides = {}
+            if model_args.pretrained_vqvae_path is not None:
+                ego4o_config_overrides['pretrained_vqvae_path'] = model_args.pretrained_vqvae_path
+            if model_args.pretrained_imu_tokenizer_path is not None:
+                ego4o_config_overrides['pretrained_imu_tokenizer_path'] = model_args.pretrained_imu_tokenizer_path
             model = Ego4oForCausalLM.from_pretrained(
                 model_args.model_name_or_path,
                 cache_dir=training_args.cache_dir,
                 attn_implementation=attn_implementation,
                 torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
                 **bnb_model_from_pretrained_args,
+                **ego4o_config_overrides,
                 load_motion_encoder=model_args.load_motion_encoder,
                 is_pretrain=model_args.is_pretrain,
                 motion_token_loss_weight=model_args.motion_token_loss_weight,
@@ -459,6 +455,11 @@ def train(attn_implementation=None):
                 model.to(torch.float16)
         rank0_print("Adding LoRA adapters...")
         model = get_peft_model(model, lora_config)
+        # Paper §3.3.2: LoRA finetuning still updates the motion embedding layer
+        # E_M (vq_net_postprocess) — peft froze it; re-enable. (E_I/mm_projector
+        # is re-enabled inside initialize_vision_modules, llava_arch.py.)
+        for p in model.get_model().vq_net_postprocess.parameters():
+            p.requires_grad = True
 
     if 'mpt' in model_args.model_name_or_path:
         tokenizer = transformers.AutoTokenizer.from_pretrained(
@@ -530,8 +531,10 @@ def train(attn_implementation=None):
             model.requires_grad_(False)
             for p in model.get_model().vq_net_postprocess.parameters():
                 p.requires_grad = True
-            for p in model.get_model().imu_tokenizer_postprocess.parameters():
-                p.requires_grad = True
+            # GT-motion variant has no IMU modules
+            if hasattr(model.get_model(), 'imu_tokenizer_postprocess'):
+                for p in model.get_model().imu_tokenizer_postprocess.parameters():
+                    p.requires_grad = True
 
         if not training_args.lora_enable:
             # freeze the motion encoder if needed
@@ -549,7 +552,8 @@ def train(attn_implementation=None):
 
         # freeze the motion encoder if needed
         # load the motion encoder again here
-        if not training_args.lora_enable:
+        # (skipped in the GT-motion variant: no IMU tokenizer is built)
+        if not training_args.lora_enable and model.get_model().config.pretrained_imu_tokenizer_path:
             print(f"Loading pretrained imu tokenizer model from {model.get_model().config.pretrained_imu_tokenizer_path}", flush=True)
             pretrain_imu_tokenizer_state_dict = torch.load(model.get_model().config.pretrained_imu_tokenizer_path)
             if 'state_dict' in pretrain_imu_tokenizer_state_dict:
@@ -559,7 +563,7 @@ def train(attn_implementation=None):
             model.get_model().imu_tokenizer.load_state_dict(pretrain_imu_tokenizer_state_dict, strict=True)
 
         model.config.freeze_motion_encoder = training_args.freeze_motion_encoder
-        if training_args.freeze_motion_encoder:
+        if training_args.freeze_motion_encoder and hasattr(model.get_model(), 'imu_tokenizer'):
             print('freeze the imu tokenizer encoder', flush=True)
             model.get_model().imu_tokenizer.requires_grad_(False)
 
@@ -595,6 +599,35 @@ def train(attn_implementation=None):
                            tokenizer=tokenizer,
                            args=training_args,
                            **data_module)
+    if training_args.early_stopping_patience > 0:
+        # Custom callback: transformers' EarlyStoppingCallback requires
+        # load_best_model_at_end, which is broken for LoRA + DeepSpeed in this
+        # version (deepspeed_load_checkpoint expects a full engine state).
+        # This one only stops; the best checkpoint stays on disk
+        # (trainer_state.json: best via lowest eval_loss) with its adapter +
+        # non_lora_trainables.bin saved per checkpoint (see LLaVATrainer).
+        class SimpleEarlyStoppingCallback(transformers.TrainerCallback):
+            def __init__(self, patience):
+                self.patience = patience
+                self.best = None
+                self.bad = 0
+
+            def on_evaluate(self, args, state, control, metrics=None, **kwargs):
+                val = None if metrics is None else metrics.get('eval_loss')
+                if val is None:
+                    return
+                if self.best is None or val < self.best:
+                    self.best = val
+                    self.bad = 0
+                else:
+                    self.bad += 1
+                    rank0_print(f'early stopping: eval_loss {val:.4f} >= best '
+                                f'{self.best:.4f} ({self.bad}/{self.patience})')
+                    if self.bad >= self.patience:
+                        control.should_training_stop = True
+
+        trainer.add_callback(SimpleEarlyStoppingCallback(
+            training_args.early_stopping_patience))
 
     if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
         trainer.train(resume_from_checkpoint=True)
