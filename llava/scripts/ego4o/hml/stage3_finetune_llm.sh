@@ -2,7 +2,7 @@
 # Stage 3 (paper stage C5b): multi-modal finetune (image + GT motion + text).
 # LoRA r=128 alpha=256 on the LLM (paper §3.3.2); E_I (mm_projector) and E_M
 # (vq_net_postprocess) train fully; CLIP tower + VQ-VAE frozen. Env: ego4o_llava.
-# 4 epochs with early stopping on val loss (patience 3 evals @ every 500 steps).
+# 4 epochs with early stopping on val loss (patience 3 evals @ every 250 steps).
 #   GPUS=2,3 bash stage3_finetune_llm.sh
 # Deviations from release documented in README (release script did full FT, 2 epochs).
 set -euo pipefail
@@ -44,13 +44,13 @@ deepspeed --include "localhost:$GPUS" --master_port "${MASTER_PORT:-29512}" \
     --tf32 True \
     --output_dir ./checkpoints/ego4o_hml_finetune_lora \
     --num_train_epochs 4 \
-    --per_device_train_batch_size 24 \
-    --per_device_eval_batch_size 8 \
+    --per_device_train_batch_size 64 \
+    --per_device_eval_batch_size 16 \
     --gradient_accumulation_steps 1 \
     --evaluation_strategy "steps" \
-    --eval_steps 500 \
+    --eval_steps 250 \
     --save_strategy "steps" \
-    --save_steps 500 \
+    --save_steps 250 \
     --save_total_limit 3 \
     --metric_for_best_model eval_loss \
     --greater_is_better False \

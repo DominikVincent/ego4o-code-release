@@ -42,7 +42,13 @@ def load_model(args):
     if is_lora:
         assert args.model_base is not None, '--model_base (the pretrain dir) is required for LoRA checkpoints'
         tokenizer = AutoTokenizer.from_pretrained(args.model_base, use_fast=False)
-        lora_cfg = Ego4oConfig.from_pretrained(args.model_path)
+        # intermediate checkpoint-N dirs carry no config.json (HF writes it only
+        # to the run root at the end) -> fall back to the run root, then the base
+        for cfg_dir in (args.model_path, os.path.dirname(args.model_path.rstrip('/')), args.model_base):
+            if os.path.exists(os.path.join(cfg_dir, 'config.json')):
+                break
+        print(f'Loading Ego4oConfig from {cfg_dir}', flush=True)
+        lora_cfg = Ego4oConfig.from_pretrained(cfg_dir)
         print(f'Loading base model from {args.model_base}', flush=True)
         model = Ego4oForCausalLM.from_pretrained(
             args.model_base,

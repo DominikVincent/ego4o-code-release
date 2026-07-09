@@ -3,7 +3,7 @@
 # motion MLP adapter (E_M / vq_net_postprocess); LLM+vision+VQ-VAE frozen.
 # Data: motion->text questions only (version plain). Env: ego4o_llava.
 #   GPUS=2,3 bash stage2_pretrain_llm.sh
-# Deviation from release: per-device batch 32 (was 16) for the H200s; lr kept.
+# Batch: 64/GPU x2 = effective 128 (LLaVA pretrain-recipe scale; release used 16/GPU x unknown GPUs). lr kept.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LLAVA="$(cd "$SCRIPT_DIR/../../.." && pwd)"
@@ -43,7 +43,7 @@ deepspeed --include "localhost:$GPUS" --master_port "${MASTER_PORT:-29511}" \
     --tf32 True \
     --output_dir ./checkpoints/ego4o_hml_pretrain \
     --num_train_epochs 1 \
-    --per_device_train_batch_size 32 \
+    --per_device_train_batch_size 64 \
     --per_device_eval_batch_size 4 \
     --gradient_accumulation_steps 1 \
     --evaluation_strategy "no" \

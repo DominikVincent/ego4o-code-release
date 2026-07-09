@@ -43,7 +43,7 @@ WANDB_MODE=offline ...                    # disable wandb syncing (login is used
 
 ## Picking the "best" stage-3 checkpoint (early stopping)
 
-Stage 3 trains up to 4 epochs, evaluates `eval_loss` on 2,048 val samples every 500 steps,
+Stage 3 trains up to 4 epochs, evaluates `eval_loss` on 2,048 val samples every 250 steps,
 and stops after 3 evals without improvement. Because `load_best_model_at_end` is broken for
 LoRA+DeepSpeed in this transformers version (see README §6), **the final save is the
 last step, not necessarily the best**. The best one is recorded in
@@ -55,7 +55,7 @@ adapter and `non_lora_trainables.bin`, so it is directly evaluable:
 MODEL_PATH=llava/checkpoints/ego4o_hml_finetune_lora/checkpoint-<BEST> GPUS=2 bash stage4_eval.sh
 ```
 
-With early stopping (patience 3 × 500 steps) the last and best checkpoints are usually
+With early stopping (patience 3 × 250 steps) the last and best checkpoints are usually
 within noise of each other; evaluate both if in doubt (`--data_range 500` for a quick pass).
 
 ## Resume / interruption
@@ -77,16 +77,18 @@ Stay-close-to-paper defaults are baked in; the knobs you might touch:
 - **GPU count**: stages 2/3 use `deepspeed --include localhost:$GPUS` — any comma list works.
   Effective batch = `per_device_train_batch_size × #GPUs` (grad-accum is 1). If you change
   the number of GPUs, adjust `--per_device_train_batch_size` (or add
-  `--gradient_accumulation_steps`) to keep the effective batch: stage 2 targets 64,
-  stage 3 targets 48. Stage 1 must stay single-GPU.
-- **Batch size / OOM**: H200s have plenty of headroom at the defaults (pretrain 32/GPU,
-  finetune 24/GPU). If you hit OOM (e.g. on smaller GPUs), first lower the per-device batch
+  `--gradient_accumulation_steps`) to keep the effective batch: stages 2 and 3 both target
+  **128** (the LLaVA-recipe scale for lr 1e-3 / 2e-4). Stage 1 must stay single-GPU.
+- **Batch size / OOM**: defaults are 64/GPU for both LLM stages — measured peak 83 GiB/GPU
+  of 143 GiB for the LoRA finetune (the heavier stage), so there is still headroom but no
+  need to go higher: stage 1's batch (128) is the authors' value and is update-count-bound,
+  not memory-bound (uses ~2.7 GiB). If you hit OOM (e.g. on smaller GPUs), first lower the per-device batch
   + raise grad-accum; as a last resort switch stage 3 to `--deepspeed ./scripts/zero2_offload.json`
   (CPU optimizer offload, ~2× slower — this is what the original release used).
 - **Learning rates**: stage 2 `1e-3` (adapter only), stage 3 `2e-4` LoRA + `--mm_projector_lr 2e-5`
   for E_I. Keep these when changing batch sizes moderately (the release did not scale lr either).
 - **Epochs / early stopping**: stage 3 `--num_train_epochs 4`, `--early_stopping_patience 3`
-  (set `0` to disable), `--eval_steps/--save_steps 500` (keep them equal).
+  (set `0` to disable), `--eval_steps/--save_steps 250` (keep them equal).
 - **LoRA vs full finetune**: to reproduce the *released* script instead of the paper text,
   drop the three `--lora_*` flags + `--mm_projector_lr`, set `--learning_rate 2e-5`, and use
   `--deepspeed ./scripts/zero2_offload.json`. Stage 4 then needs no `--model_base`
@@ -102,10 +104,10 @@ Stay-close-to-paper defaults are baked in; the knobs you might touch:
 - **Stage 1 acceptance**: val `C-MPJPE` should reach the tens-of-mm range (paper's VQ-VAE
   reconstruction ceiling ≈45 mm C-MPJPE). If it plateaus far above that, stop and investigate
   before spending LLM compute. ~860 iters/epoch × 30 epochs, a few hours, <10 GB VRAM.
-- **Stage 2**: train loss should fall smoothly from ≈3 (smoke: 94 samples/s at bs 32×2 ⇒
-  ≈20 min/epoch over 110k samples; 1 epoch total).
-- **Stage 3**: watch `eval_loss` (smoke started ≈1.4 and fell immediately). ≈2,300 steps/epoch
-  at effective batch 48; evals every 500 steps.
+- **Stage 2**: train loss should fall smoothly from ≈3; ≈860 steps total
+  (110k samples / effective batch 128, 1 epoch, well under an hour).
+- **Stage 3**: watch `eval_loss` (smoke started ≈1.4 and fell immediately). ≈860 steps/epoch
+  at effective batch 128; evals every 250 steps (~1 min each).
 - **Stage 4**: full test split (29,449 samples) takes a few hours on one GPU at bs 24;
   use `--data_range 500` for a quick preview. Compare BLEU / BERTScore / ROUGE-L with the
   paper's motion-understanding table.

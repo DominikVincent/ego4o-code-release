@@ -208,7 +208,7 @@ The original IMU encoder stage (paper stage 2 / handoff C4,
 | Normalization stats = HumanML3D-aligned (not recomputed) | deliberate, for VQ-VAE transfer + consistency with the user's own paper |
 | Finetune uses **LoRA r=128 α=256, lr 2e-4** (+E_I/E_M fully trained) | paper text §3.3.2; NOTE the released script did **full FT @ 2e-5, 2 epochs** — we follow the paper (user decision) |
 | 4 epochs + early stopping on val loss (patience 3 @ 500-step evals) | paper says 4 epochs; release script said 2; early stop added as a guard |
-| Pretrain per-device batch 32 (release: 16), 2×H200 | hardware headroom; lr kept at 1e-3; release GPU count unknown |
+| LLM per-device batch 64 (release: 16/24) → effective 128, 2×H200 | hardware headroom; lr kept at 1e-3; release GPU count unknown |
 | Question sampling: `<image>`-questions only for samples that have a frame | release assumed an image per segment; 0.3 % of train lacks frames |
 | Train/val/test = user's sequence-level split (596/85/172 recordings) | required for comparison with the user's paper; paper's exact split was never released |
 | VQ-VAE eval on **val** split each epoch (release: test) | keeps test untouched for final numbers |
