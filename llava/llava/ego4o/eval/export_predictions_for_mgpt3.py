@@ -9,9 +9,11 @@ eval sample by
 
 (dataset_t2m.py: `'%s_%f_%f_%s' % (name, f_tag, to_tag, caption_type.replace(' ','_'))`,
 with `f_tag/to_tag = float(...)` of the raw annotation seconds). ego4o's atomic segments
-are the SAME annotations, so we can reconstruct that exact fname per prediction and hand
-MotionGPT3's `evaluate_from_prediction.py` a `{fname: pred_text}` map. Both models then
-score through MotionGPT3's identical M2TMetrics on the intersection of samples.
+are the SAME annotations, so we can reconstruct that exact fname per prediction and emit
+the shared predictions schema (motGPT/utils/predictions_io.py): a `{meta, predictions}`
+object whose `predictions` is `{fname: {gt_text, pred_text, category, start, end, ...}}`.
+MotionGPT3's `evaluate_from_prediction.py` reads it directly; both models then score
+through MotionGPT3's identical M2TMetrics on the intersection of samples.
 
 This is a pure POST-PROCESSOR: it consumes the `result.json` that
 `test_ego4o_hml_batch.py` already writes (fields: pred_text, gt_text, motion_id,
@@ -80,6 +82,8 @@ def main():
                     help='processed nymeria root (must match MotionGPT3 NYMERIA_ROOT)')
     ap.add_argument('--out', default=None,
                     help='output predictions.json (default: alongside result.json)')
+    ap.add_argument('--split', default='test',
+                    help='dataset split, stored in the shared-format meta block')
     args = ap.parse_args()
 
     texts_dir = pjoin(args.processed_nymeria, 'texts')
@@ -146,13 +150,33 @@ def main():
         fname = mgpt3_fname(hml_item, start_s, end_s)
         if fname in predictions:
             n_collision += 1
-        predictions[fname] = pred_text
+        # Shared predictions schema (motGPT/utils/predictions_io.py). ego4o cannot import
+        # motGPT, so the record is assembled inline; it carries gt_text so the handoff
+        # file is human-readable (gt/pred side-by-side), unlike the old {fname: pred} map.
+        predictions[fname] = {
+            "idx": hml_item,
+            "start": start_s,
+            "end": end_s,
+            "category": ATOMIC_TYPE,
+            "gt_text": gt_text,
+            "pred_text": pred_text,
+            "motion_file": motion_file,
+        }
         n_ok += 1
 
     out_path = args.out or pjoin(os.path.dirname(os.path.abspath(args.result)),
                                  'predictions_mgpt3.json')
+    meta = {
+        'model': 'ego4o',
+        'task': 'm2t',
+        'split': args.split,
+        'dataset_root': args.processed_nymeria,
+        'source_result_json': os.path.abspath(args.result),
+        'count': len(predictions),
+    }
     with open(out_path, 'w') as f:
-        json.dump(predictions, f, indent=1)
+        json.dump({'meta': meta, 'predictions': predictions}, f,
+                  indent=2, ensure_ascii=False)
 
     keys_path = pjoin(os.path.dirname(os.path.abspath(out_path)), 'keys.txt')
     with open(keys_path, 'w') as f:
