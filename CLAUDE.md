@@ -43,6 +43,21 @@ Two independent components (both `README.md` files are empty):
 
 ## Data pipeline (Nymeria)
 
+> **The GT-motion reproduction actually in use does NOT follow the pipeline described in
+> this section.** It builds its own dataset from `processed_nymeria_scene_sub_split` via
+> `llava/scripts/ego4o/nymeria_hml/` and loads it with `NymeriaHMLDataset`. Read
+> [`llava/scripts/ego4o/nymeria_hml/README.md`](llava/scripts/ego4o/nymeria_hml/README.md)
+> first — it is the authoritative dataset document. Two dataset dirs exist:
+> `/local/home/dhollidt/data/ego4o_nymeria` (legacy, atomic actions only, frozen artifact
+> behind the trained atomic model, not reproducible from HEAD) and
+> `/local/home/dhollidt/data/ego4o_nymeria_4cat` (atomic + hands/arms + legs/feet + body
+> posture, for the head-to-head against MotionGPT3). There is exactly **one** builder,
+> `build_ego4o_jsonl.py`; it takes its windows from a MotionGPT3 manifest and selects
+> categories with `--categories`. Do not add a second builder — the reason the manifest
+> exists is that two independent implementations drifted apart.
+>
+> The rest of this section documents the *original release's* pipeline, kept for reference.
+
 Builders live in `llava/scripts/ego4o/convert_nymeria_data_*.py`; the loader is
 `llava/llava/ego4o/dataset/nymeria_dataset.py` (`NymeriaDataset`).
 

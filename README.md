@@ -31,13 +31,30 @@ the 2.5.8 source build hits a cross-device rename bug. Install the prebuilt whee
 **peft must be 0.4.0** — llava's pyproject leaves it unpinned; newer peft needs accelerate>0.21
 and breaks `from transformers import Trainer` (`clear_device_cache` import error).
 
-## 2. Dataset build (already done → `/local/home/dhollidt/data/ego4o_nymeria/`)
+## 2. Dataset build
 
 The release consumes pre-extracted pickles + jsonl that were never published. We build
 an equivalent dataset from `HumanML3DFork/processed_nymeria_scene_sub_split`
 (20 fps HumanML3D-format Nymeria, all annotation types, sequence-level split) and the
 0.5 Hz egocentric frames in `/local/home/dhollidt/data/nymeria_frames/`. Sources are
 read-only; everything lands in the new dataset dir.
+
+**Full documentation: [`llava/scripts/ego4o/nymeria_hml/README.md`](llava/scripts/ego4o/nymeria_hml/README.md)** —
+window provenance, the jsonl schema, prompt design, and the legacy atomic-only dataset.
+
+Two datasets exist:
+
+| dir | categories | windows (train/val/test) | used by |
+|---|---|---|---|
+| `/local/home/dhollidt/data/ego4o_nymeria` | atomic actions only | 110,441 / 15,217 / 29,449 | the original atomic model (frozen artifact; **not** reproducible from HEAD) |
+| `/local/home/dhollidt/data/ego4o_nymeria_4cat` | atomic + hands/arms + legs/feet + body posture | 172,399 / 23,023 / 54,930 | the 4-category model compared against MotionGPT3 |
+
+The second one's **windows come from a MotionGPT3 manifest**, not from this repo:
+`scripts/dump_dataset_manifest.py` (MotionGPT3) instantiates MotionGPT3's real dataset
+classes and dumps one record per window, and `build_ego4o_jsonl.py` turns those into
+jsonl. This exists because the previous, independent implementation drifted — on the
+atomic test split MotionGPT3 had 25,694 windows, this repo produced 29,242, and only
+23,402 overlapped, so ~9 % of MotionGPT3's samples never got an ego4o prediction.
 
 Builders (run in this order, env `ego4o`, CPU only) — `llava/scripts/ego4o/nymeria_hml/`:
 
@@ -58,34 +75,39 @@ Builders (run in this order, env `ego4o`, CPU only) — `llava/scripts/ego4o/nym
    dims are ~1.5× mis-scaled at 30 fps under these stats, and they don't match the
    current features exactly (they predate a data revision) — accepted deliberately for
    cross-paper consistency.
-3. **`build_ego4o_jsonl.py`** — cuts every recording at its **atomic-action** narration
-   boundaries (`texts/{item}.txt`, lines with type `Describe my atomic actions`), maps
-   `start/end` seconds → 30 fps feature frames, picks the frame nearest the segment
-   midpoint from `nymeria_frames/<seq>/<t>.jpg`, samples one question per item from the
-   release's `constants.py` lists (seeded), answer = the narration. Splits follow
-   `train/val/test.txt` exactly. Rerunnable (e.g. after more frames are extracted).
+3. **`build_ego4o_jsonl.py`** — consumes a MotionGPT3 window manifest: maps each window's
+   `start/end` seconds → 30 fps feature frames, picks the frame nearest the window
+   midpoint from `nymeria_frames/<seq>/<t>.jpg` (±1 s), samples one question per row from
+   the per-category training lists in `constants.py` (seeded), answer = the narration.
+   It applies **no** window filtering of its own — the manifest is the population.
+   `--categories` (default: all four) narrows the build; `--limit` truncates for smoke
+   tests. Rerunnable.
 
 Output jsonl (schema is a superset of the release's: adds `hml_item`, `start_frame`,
-`end_frame`; motion is sliced from the whole-recording feature arrays at load time —
-the 263-dim HML representation is root-relative per frame, so slices need no renormalization):
+`end_frame`, and — new — `fname` (MotionGPT3's join key), `caption_type` and `gt_texts`;
+motion is sliced from the whole-recording feature arrays at load time — the 263-dim HML
+representation is root-relative per frame, so slices need no renormalization):
 
-| split | segments | with image |
-|---|---|---|
-| `ego4o_image_motion_train.jsonl` | 110,441 | 99.7 % |
-| `ego4o_image_motion_val.jsonl` | 15,217 | 100 % |
-| `ego4o_image_motion_test.jsonl` | 29,449 | 100 % |
-| `ego4o_motion_text_{split}.jsonl` | same segments | motion→text questions only (for stage-2 pretrain) |
+| split | windows | rows | atomic | hands/arms | legs/feet | posture | with image |
+|---|---|---|---|---|---|---|---|
+| `ego4o_image_motion_train.jsonl` | 172,399 | 177,741 | 106,195 | 23,059 | 21,437 | 21,708 | 99.4 % |
+| `ego4o_image_motion_val.jsonl` | 23,023 | 23,023 | 16,145 | 2,293 | 2,292 | 2,293 | 100 % |
+| `ego4o_image_motion_test.jsonl` | 54,930 | 54,930 | 25,694 | 9,746 | 9,746 | 9,744 | 100 % |
+| `ego4o_motion_text_{split}.jsonl` | same windows | | | | | | motion→text questions only (stage-2 pretrain) |
 
-Known data issues (in the *source* data, reported in `build_report.json`):
-- `20230928_s0_grace_randolph_act{0,1,2}` have entirely **negative text timestamps**
-  (broken narration→motion clock offset in `texts/`); their 531+156 segments are dropped
-  (`dropped_bad_time`). Regenerate those three text files and rerun the builder to recover them.
-- `20230725_s0_stephanie_moses_act3` has no extracted frames; `20230919_s0_andrew_taylor_act2`
-  only 36 — their segments stay motion-only (382 train samples).
-- Segments < 5 s are dropped (mirrors the release's `min_seq_len=150`): ~13.9 k total.
+Train emits one row per (window, caption) so multi-caption windows are not wasted;
+val/test stay 1:1 with the manifest so their key sets match it exactly.
+
+Notes on the source data (see the builder README for the full list):
+- The three `20230928_s0_grace_randolph_act{0,1,2}` recordings have entirely **negative
+  text timestamps**; MotionGPT3's length filter drops those windows, so they never reach
+  the manifest.
 - Time sync text↔motion↔image was verified by construction (all three extractions anchor at
   `NymeriaDataProvider.timespan_ns[0]`) **and** empirically (camera-vs-head-joint speed
   correlation peaks at exactly 0.00 s, r≈0.96–0.98, on 4 sequences).
+- ego4o's window is fixed at 148 frames @30 fps: 44 % of test windows are shorter and get
+  zero-padded, 56 % are longer and get truncated (mostly by 2 frames — the median atomic
+  window is exactly 5.00 s = 150 frames). Mean temporal coverage 97.7 %.
 
 ## 3. Loaders (new, originals untouched)
 
@@ -183,6 +205,44 @@ The original IMU encoder stage (paper stage 2 / handoff C4,
   (`tgt_offsets=None`) — it is only needed for `process_file(uniform=True)`, which the
   precomputed-feature path never calls.
 
+**Modified for the 4-category comparison** (see `llava/scripts/ego4o/nymeria_hml/README.md`):
+
+- `llava/scripts/ego4o/nymeria_hml/build_ego4o_jsonl.py` — **rewritten** to consume a
+  MotionGPT3 window manifest (`--manifest_dir`, `--categories`) instead of selecting
+  windows itself. The atomic-only filter, the `MIN_FRAMES = 150` rule and the
+  `texts/` parsing are gone; `load_constants` / `load_frame_times` / `pick_frame` are
+  unchanged. Consequence: the legacy `ego4o_nymeria` dataset dir is no longer
+  reproducible from HEAD (its rules are documented in the builder README instead).
+- `llava/llava/ego4o/constants.py` — appended `CATEGORY_QUESTION_BODIES` (9 per
+  category, composed over the release's three modality prefixes) and
+  `EVAL_QUESTION_BY_TYPE` (body [0] of each category with the `<image>\n<motion>\n`
+  prefix). As in the release, the evaluation question is one of the training questions.
+  Existing lists untouched.
+- `llava/llava/ego4o/dataset/nymeria_hml_dataset.py` — `load_data` carries `fname`,
+  `caption_type` and `gt_texts` through (with `.get()` defaults, so the legacy jsonl
+  still loads).
+- `llava/llava/ego4o/eval/test_ego4o_hml_batch.py` — `--per_sample_prompt` (default off,
+  so the atomic model still evaluates exactly as before) prompts each sample with the
+  fixed question for its caption type. Needs left padding, an explicit
+  `attention_mask` and `model.config.tokenizer_padding_side = 'left'` (the checkpoints
+  store the *training* value, `'right'`, under which every sample but the longest would
+  generate from pad embeddings). `result.json` now carries `fname`/`caption_type`, and
+  `metrics.json` gains a per-category breakdown.
+- `llava/llava/ego4o/eval/export_predictions_for_mgpt3.py` — reads `fname` straight from
+  `result.json`; the k-th-atomic-line reconstruction (which produced 207 colliding fnames)
+  is **deleted**. Old result files can no longer be exported — their original
+  `predictions_mgpt3.json` is the artifact to keep.
+- `llava/scripts/ego4o/hml/stage{2,3}_*.sh` — `OUTPUT_DIR` env var (defaults unchanged),
+  so a second model can be trained without overwriting the first.
+
+On the **MotionGPT3** side: `motGPT/models/base.py` no longer does
+`fname.split('/')[-1]` when writing predictions. Two Nymeria caption types contain a
+slash, so that collapsed all 9,746 legs and all 9,746 arms predictions onto the single
+keys `feet_motion` / `arms_motion`. The full fname is now the record key and a
+`'/'→'-'` copy is used only for the `.npy` sidecar filenames. Added there:
+`scripts/dump_dataset_manifest.py`, `configs/test_nymeria_env_me2t_4cat.yaml`,
+`configs/dump_train_manifest_4cat.yaml`.
+
 **Added**:
 - `llava/scripts/zero2.json`, `llava/scripts/zero2_offload.json` — the release's training
   scripts reference these DeepSpeed configs but they were missing (standard LLaVA ZeRO-2).
@@ -212,6 +272,11 @@ The original IMU encoder stage (paper stage 2 / handoff C4,
 | Question sampling: `<image>`-questions only for samples that have a frame | release assumed an image per segment; 0.3 % of train lacks frames |
 | Train/val/test = user's sequence-level split (596/85/172 recordings) | required for comparison with the user's paper; paper's exact split was never released |
 | VQ-VAE eval on **val** split each epoch (release: test) | keeps test untouched for final numbers |
+| Windows come from a MotionGPT3 manifest, not from this repo's own rules | the two implementations drifted (23,402 of 25,694 atomic test windows overlapped); a fair comparison needs one definition of the population |
+| The 4-category model shares the **frozen stage-1 VQ-VAE** with the atomic model (stage 1 is not re-run) | keeps the motion tokenizer identical across the two ego4o models. Caveat: that VQ-VAE was trained on the ≥ 150-frame legacy dataset, so short (zero-padded) windows are slightly out of its training distribution |
+| Short windows are zero-padded to 148 frames, long ones truncated | ego4o has a fixed window and no length mask; MotionGPT3 feeds true variable-length motion. Inherent to the baseline, not a choice made here |
+| Atomic keeps the release's evaluation prompt; the other three mirror MotionGPT3's `EVAL_TEMPLATES_ME2T` | atomic stays comparable to the earlier atomic-only run, while the new categories ask for the same kind of caption as MotionGPT3 |
+| ego4o is not trained on `Describe my activity`; the MotionGPT3 checkpoint was | activity windows are ~30 s and would be truncated to 4.93 s. Excluded from both evaluations |
 
 ## 8. Smoke-test status (2026-07-08)
 

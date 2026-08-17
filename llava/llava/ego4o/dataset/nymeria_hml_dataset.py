@@ -128,6 +128,12 @@ class NymeriaHMLDataset(Dataset):
                 'hml_item': item['hml_item'],
                 'start_frame': item['start_frame'],
                 'end_frame': item['end_frame'],
+                # Carried through to the eval collator so predictions can be keyed
+                # by MotionGPT3's own fname and prompted per caption category.
+                # `.get` keeps pre-4-category jsonl files loadable (fields -> None).
+                'fname': item.get('fname'),
+                'caption_type': item.get('caption_type'),
+                'gt_texts': item.get('gt_texts'),
             }
             if item.get('image'):
                 data_item['img_path'] = item['image']

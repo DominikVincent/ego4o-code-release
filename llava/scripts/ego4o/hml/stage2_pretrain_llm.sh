@@ -17,6 +17,10 @@ check_gpus_free "$GPUS"
 VQVAE_CKPT="${VQVAE_CKPT:-$REPO/EgoOmniMocap/work_dirs/train_nymeria_vqvae_4096_64_hml/best_vqvae.pth}"
 [ -e "$VQVAE_CKPT" ] || { echo "ABORT: VQ-VAE checkpoint not found: $VQVAE_CKPT — run stage1 first." >&2; exit 1; }
 DATASET_DIR="${DATASET_DIR:-/local/home/dhollidt/data/ego4o_nymeria}"
+# Set OUTPUT_DIR to train a second model without overwriting the existing one.
+# (Do not rely on appending --output_dir via "$@": whether a duplicated flag wins
+# depends on the arg parser, and losing that race would clobber a 14 GB checkpoint.)
+OUTPUT_DIR="${OUTPUT_DIR:-./checkpoints/ego4o_hml_pretrain}"
 
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate ego4o_llava
@@ -41,7 +45,7 @@ deepspeed --include "localhost:$GPUS" --master_port "${MASTER_PORT:-29511}" \
     --mm_use_im_patch_token False \
     --bf16 True \
     --tf32 True \
-    --output_dir ./checkpoints/ego4o_hml_pretrain \
+    --output_dir "$OUTPUT_DIR" \
     --num_train_epochs 1 \
     --per_device_train_batch_size 64 \
     --per_device_eval_batch_size 4 \

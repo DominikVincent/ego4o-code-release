@@ -41,6 +41,82 @@ MASTER_PORT=29600 ...                     # if the default deepspeed port is tak
 WANDB_MODE=offline ...                    # disable wandb syncing (login is used by default)
 ```
 
+## Training the 4-category model (second dataset)
+
+The 4-category model (atomic actions + hands/arms + legs/feet + body posture, for the
+head-to-head against MotionGPT3) reuses **stage 1 unchanged** — both ego4o models share
+the frozen `best_vqvae.pth`, which keeps the motion tokenizer identical across them — and
+re-runs stages 2-4 on `/local/home/dhollidt/data/ego4o_nymeria_4cat`. Build that dataset
+first: see [`llava/scripts/ego4o/nymeria_hml/README.md`](llava/scripts/ego4o/nymeria_hml/README.md).
+
+```bash
+export LLAVA=$PWD/llava
+export DATASET_DIR=/local/home/dhollidt/data/ego4o_nymeria_4cat
+
+# Stage 2 — motion<->text alignment pretrain (E_M only, 1 epoch)
+DATASET_DIR=$DATASET_DIR OUTPUT_DIR=./checkpoints/ego4o_4cat_pretrain \
+GPUS=2,3 bash llava/scripts/ego4o/hml/stage2_pretrain_llm.sh
+
+# Stage 3 — LoRA finetune. PRETRAIN_DIR is mandatory: without it stage 3 would
+# silently finetune the ATOMIC pretrain checkpoint on the new data.
+DATASET_DIR=$DATASET_DIR PRETRAIN_DIR=$LLAVA/checkpoints/ego4o_4cat_pretrain \
+OUTPUT_DIR=./checkpoints/ego4o_4cat_finetune_lora \
+GPUS=2,3 bash llava/scripts/ego4o/hml/stage3_finetune_llm.sh
+
+# Stage 4 — eval with the per-category prompts
+MODEL_PATH=$LLAVA/checkpoints/ego4o_4cat_finetune_lora \
+MODEL_BASE=$LLAVA/checkpoints/ego4o_4cat_pretrain GPUS=2 \
+bash llava/scripts/ego4o/hml/stage4_eval.sh --dataset_dir $DATASET_DIR --per_sample_prompt
+```
+
+Then score both models through MotionGPT3 on the identical population, **per category**:
+
+```bash
+python -m llava.ego4o.eval.export_predictions_for_mgpt3 --result <save_dir>/result.json
+# in MotionGPT3, env mgpt3:
+python -m test --cfg configs/test_nymeria_env_me2t_4cat.yaml            # mgpt3 predictions
+python find_intersecting_results.py <ego4o predictions_mgpt3.json> <mgpt3 predictions.json> \
+       --out results/compare_ego4o/isect_4cat.txt
+python -m evaluate_from_prediction --cfg configs/test_nymeria_env_me2t_4cat.yaml \
+       --predictions <each> --restrict_keys results/compare_ego4o/isect_4cat.txt \
+       --per_category --strict
+```
+
+`--per_category` adds a `per_category` block to the metrics json with one entry per
+caption type, so the result reads "this good on arms, this good on legs, this good on
+atomic actions". Caveat: `M2TMetrics` computes R-precision over retrieval pools of 32
+drawn from the scored set, so per-category R-precision is comparable *between models*
+but not against the aggregate; Bleu/Rouge/Cider/BertScore are per-sample and unaffected.
+ego4o's own `metrics.json` already carries the same breakdown.
+
+**On the prompts.** Each category is evaluated with one fixed question
+(`EVAL_QUESTION_BY_TYPE` in `llava/llava/ego4o/constants.py`) that is also one of the
+questions the model trained on — the release's convention, where the eval query is
+literally `IMAGE_MOTION_TO_TEXT_QUESTION_LIST[0]`. `--per_sample_prompt` is required
+here because the three body-part categories are annotated on the same windows, so with
+one shared query the model would get identical inputs with three contradictory targets.
+Worth one sentence in the writeup: MotionGPT3 trains on 307-335 paraphrases per
+category resampled every epoch (that diversity is part of its method) versus ego4o's
+27 fixed per row, though neither model is being tested on an unseen instruction.
+
+Notes specific to this run:
+
+- **`OUTPUT_DIR`/`PRETRAIN_DIR` are env vars, not appended flags.** Appending a second
+  `--output_dir` via `"$@"` relies on the arg parser's last-wins behaviour; losing that
+  race would overwrite the existing atomic checkpoints.
+- `--per_sample_prompt` is **required** here. The three body-part categories are annotated
+  on the same windows, so with one shared query the model gets identical inputs with three
+  contradictory targets. It is off by default so the atomic model still evaluates exactly
+  as before.
+- Stage 2 discards the question entirely (`--version plain` → `preprocess_plain` replaces
+  it with a bare `<motion>` token), so the per-category prompts only matter from stage 3 on.
+  It is still re-run, because the caption mix changed.
+- **Runtime**: train rows go from 110,441 to 177,741 and the test split from 29,449 to
+  54,930, so budget roughly 1.6× the atomic run for stage 3 and 1.9× for stage 4.
+- Early stopping still reads only the first 2,048 lines of
+  `ego4o_image_motion_val.jsonl` (hardcoded in `make_supervised_data_module`); the builder
+  shuffles val with a fixed seed so that slice stays category-representative.
+
 ## Picking the "best" stage-3 checkpoint (early stopping)
 
 Stage 3 trains up to 4 epochs, evaluates `eval_loss` on 2,048 val samples every 250 steps,

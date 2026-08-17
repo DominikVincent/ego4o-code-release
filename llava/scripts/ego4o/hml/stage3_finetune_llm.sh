@@ -17,6 +17,9 @@ check_gpus_free "$GPUS"
 PRETRAIN_DIR="${PRETRAIN_DIR:-$LLAVA/checkpoints/ego4o_hml_pretrain}"
 [ -d "$PRETRAIN_DIR" ] || { echo "ABORT: pretrain checkpoint not found: $PRETRAIN_DIR — run stage2 first." >&2; exit 1; }
 DATASET_DIR="${DATASET_DIR:-/local/home/dhollidt/data/ego4o_nymeria}"
+# Set OUTPUT_DIR to train a second model without overwriting the existing one.
+# (Do not rely on appending --output_dir via "$@" -- see stage2_pretrain_llm.sh.)
+OUTPUT_DIR="${OUTPUT_DIR:-./checkpoints/ego4o_hml_finetune_lora}"
 
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate ego4o_llava
@@ -42,7 +45,7 @@ deepspeed --include "localhost:$GPUS" --master_port "${MASTER_PORT:-29512}" \
     --group_by_modality_length True \
     --bf16 True \
     --tf32 True \
-    --output_dir ./checkpoints/ego4o_hml_finetune_lora \
+    --output_dir "$OUTPUT_DIR" \
     --num_train_epochs 4 \
     --per_device_train_batch_size 64 \
     --per_device_eval_batch_size 16 \
